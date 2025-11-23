@@ -10,11 +10,16 @@ import (
 	"strings"
 )
 
+var scheme = "http"
+
 func main() {
 	http.HandleFunc("/proxy", handleProxy)
 	port := "8088"
 	if p := os.Getenv("PORT"); p != "" {
 		port = p
+	}
+	if os.Getenv("USE_HTTPS") == "true" {
+		scheme = "https"
 	}
 	log.Printf("Proxy server running on :%s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
@@ -95,7 +100,7 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 
 		// Rewrite to route through your proxy
 		proxyURL := url.URL{
-			Scheme: "http",
+			Scheme: scheme,
 			Host:   r.Host,
 			Path:   "/proxy",
 		}
