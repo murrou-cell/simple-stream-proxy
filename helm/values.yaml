@@ -1,0 +1,17 @@
+tailscaleIngress:
+  enabled: true
+  host: stream-proxy
+  serviceName: stream-proxy
+  servicePort: 8088
+  funnel: true
+
+image:
+  repository: ghcr.io/murrou-cell/simple-stream-proxy
+  tag: main
+  pullPolicy: Always
+
+service:
+  type: ClusterIP
+  port: 8088
+  
+containerPort: 8088

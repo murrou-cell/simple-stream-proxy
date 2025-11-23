@@ -1,0 +1,5 @@
+apiVersion: v2
+name: semple-stream-proxy
+description: A Helm chart for semple-stream-proxy
+version: 0.1.0
+appVersion: "latest"
