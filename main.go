@@ -26,37 +26,36 @@ func main() {
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
-	// Handle CORS preflight
+	// Always set CORS headers first
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+	// Handle preflight
 	if r.Method == http.MethodOptions {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	rawURL := r.URL.Query().Get("url")
 	if rawURL == "" {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Error(w, "missing url parameter", http.StatusBadRequest)
 		return
 	}
 
 	upstream, err := url.Parse(rawURL)
 	if err != nil {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Error(w, "invalid url parameter", http.StatusBadRequest)
 		return
 	}
 
 	req, err := http.NewRequestWithContext(r.Context(), "GET", upstream.String(), nil)
 	if err != nil {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Error(w, "cannot create request", http.StatusInternalServerError)
 		return
 	}
 
-	// Custom headers support
+	// Copy custom headers
 	for _, h := range r.URL.Query()["header"] {
 		parts := strings.SplitN(h, "=", 2)
 		if len(parts) == 2 {
@@ -67,21 +66,20 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Error(w, "upstream request failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Copy upstream headers but preserve CORS
+	// Copy headers from upstream, skip any CORS headers
 	for k, vals := range resp.Header {
+		if strings.HasPrefix(k, "Access-Control-") {
+			continue
+		}
 		for _, v := range vals {
 			w.Header().Add(k, v)
 		}
 	}
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 
 	// Handle M3U8 specially
 	contentType := resp.Header.Get("Content-Type")
