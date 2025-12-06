@@ -86,6 +86,12 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Otherwise just stream normally
 	for k, vals := range resp.Header {
+		// Skip CORS headers from upstream to avoid duplicates
+		if k == "Access-Control-Allow-Origin" ||
+			k == "Access-Control-Allow-Methods" ||
+			k == "Access-Control-Allow-Headers" {
+			continue
+		}
 		for _, v := range vals {
 			w.Header().Add(k, v)
 		}
