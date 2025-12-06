@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strings"
 )
 
@@ -109,17 +111,50 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 
 	for scanner.Scan() {
 		line := scanner.Text()
+		trim := strings.TrimSpace(line)
 
-		// Not a URL
-		if strings.HasPrefix(line, "#") || strings.TrimSpace(line) == "" {
+		if strings.HasPrefix(trim, "#EXT-X-KEY") {
+			re := regexp.MustCompile(`URI="([^"]+)"`)
+			line = re.ReplaceAllStringFunc(line, func(match string) string {
+				m := re.FindStringSubmatch(match)
+				if len(m) < 2 {
+					return match
+				}
+
+				keyURL := m[1]
+				abs := base.ResolveReference(&url.URL{Path: keyURL}).String()
+
+				proxyURL := url.URL{
+					Scheme: scheme,
+					Host:   r.Host,
+					Path:   "/proxy",
+				}
+				values := proxyURL.Query()
+				values.Set("url", abs)
+
+				for _, h := range r.URL.Query()["header"] {
+					values.Add("header", h)
+				}
+
+				proxyURL.RawQuery = values.Encode()
+
+				return fmt.Sprintf(`URI="%s"`, proxyURL.String())
+			})
+
+			w.Write([]byte(line + "\n"))
+			continue
+		}
+
+		// Leave comments as-is
+		if strings.HasPrefix(trim, "#") || trim == "" {
 			w.Write([]byte(line + "\n"))
 			continue
 		}
 
 		// Convert relative -> absolute
-		absURL := base.ResolveReference(&url.URL{Path: line})
+		absURL := base.ResolveReference(&url.URL{Path: trim})
 
-		// Rewrite to route through your proxy
+		// Wrap in proxy URL
 		proxyURL := url.URL{
 			Scheme: scheme,
 			Host:   r.Host,
