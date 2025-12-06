@@ -2,13 +2,12 @@ package main
 
 import (
 	"bufio"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
-	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -109,66 +108,77 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.Request) {
 	scanner := bufio.NewScanner(body)
 
+	// Read lag=N (default: 0 = disabled)
+	lagStr := r.URL.Query().Get("lag")
+	lag, _ := strconv.Atoi(lagStr)
+	if lag < 0 {
+		lag = 0
+	}
+
+	var sequence int
+	var sequenceFound bool
+	var skipCount int
+
 	for scanner.Scan() {
 		line := scanner.Text()
-		trim := strings.TrimSpace(line)
+		trimmed := strings.TrimSpace(line)
 
-		if strings.HasPrefix(trim, "#EXT-X-KEY") {
-			re := regexp.MustCompile(`URI="([^"]+)"`)
-			line = re.ReplaceAllStringFunc(line, func(match string) string {
-				m := re.FindStringSubmatch(match)
-				if len(m) < 2 {
-					return match
+		if strings.HasPrefix(trimmed, "#") {
+
+			// Detect media sequence
+			if strings.HasPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:") {
+				seqStr := strings.TrimPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:")
+				seqStr = strings.TrimSpace(seqStr)
+				if n, err := strconv.Atoi(seqStr); err == nil {
+					sequence = n
+					sequenceFound = true
+
+					// Apply lag shift if enabled
+					if lag > 0 {
+						newSeq := n - lag
+						if newSeq < 0 {
+							newSeq = 0
+						}
+						line = "#EXT-X-MEDIA-SEQUENCE:" + strconv.Itoa(newSeq)
+						skipCount = lag
+					}
 				}
-
-				keyURL := m[1]
-				abs := base.ResolveReference(&url.URL{Path: keyURL}).String()
-
-				proxyURL := url.URL{
-					Scheme: scheme,
-					Host:   r.Host,
-					Path:   "/proxy",
-				}
-				values := proxyURL.Query()
-				values.Set("url", abs)
-
-				for _, h := range r.URL.Query()["header"] {
-					values.Add("header", h)
-				}
-
-				proxyURL.RawQuery = values.Encode()
-
-				return fmt.Sprintf(`URI="%s"`, proxyURL.String())
-			})
+			}
 
 			w.Write([]byte(line + "\n"))
 			continue
 		}
 
-		// Leave comments as-is
-		if strings.HasPrefix(trim, "#") || trim == "" {
-			w.Write([]byte(line + "\n"))
+		if trimmed == "" {
+			w.Write([]byte("\n"))
 			continue
 		}
 
-		// Convert relative -> absolute
-		absURL := base.ResolveReference(&url.URL{Path: trim})
+		if skipCount > 0 && sequenceFound {
+			skipCount--
+			sequence++
+			continue
+		}
 
-		// Wrap in proxy URL
+		abs := base.ResolveReference(&url.URL{Path: trimmed})
+
 		proxyURL := url.URL{
 			Scheme: scheme,
 			Host:   r.Host,
 			Path:   "/proxy",
 		}
-		values := proxyURL.Query()
-		values.Set("url", absURL.String())
+		q := proxyURL.Query()
+		q.Set("url", abs.String())
 
-		// Preserve headers
 		for _, h := range r.URL.Query()["header"] {
-			values.Add("header", h)
+			q.Add("header", h)
 		}
 
-		proxyURL.RawQuery = values.Encode()
+		if lag > 0 {
+			q.Set("lag", strconv.Itoa(lag))
+		}
+
+		proxyURL.RawQuery = q.Encode()
 
 		w.Write([]byte(proxyURL.String() + "\n"))
 	}
