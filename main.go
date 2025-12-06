@@ -26,14 +26,14 @@ func main() {
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
-	// if hls.key is requested do not use cors
+	// Allow CORS for all requests
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+	// if hls.key is requested set appropriate content type
 	if strings.HasSuffix(r.URL.Query().Get("url"), "hls.key") {
 		w.Header().Set("Content-Type", "application/octet-stream")
-	} else {
-		// Allow CORS
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	}
 	// Handle preflight requests
 	if r.Method == http.MethodOptions {
