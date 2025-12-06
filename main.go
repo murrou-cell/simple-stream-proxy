@@ -26,42 +26,37 @@ func main() {
 }
 
 func handleProxy(w http.ResponseWriter, r *http.Request) {
-	// Allow CORS for all requests
-	w.Header().Set("Access-Control-Allow-Origin", "*")
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
-
-	// if hls.key is requested set appropriate content type
-	if strings.HasSuffix(r.URL.Query().Get("url"), "hls.key") {
-		w.Header().Set("Content-Type", "application/octet-stream")
-	}
-	// Handle preflight requests
+	// Handle CORS preflight
 	if r.Method == http.MethodOptions {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 		w.WriteHeader(http.StatusOK)
 		return
 	}
 
 	rawURL := r.URL.Query().Get("url")
-	log.Printf("Proxying request for URL: %s", rawURL)
 	if rawURL == "" {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Error(w, "missing url parameter", http.StatusBadRequest)
 		return
 	}
 
 	upstream, err := url.Parse(rawURL)
 	if err != nil {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Error(w, "invalid url parameter", http.StatusBadRequest)
 		return
 	}
 
-	// Build upstream request
 	req, err := http.NewRequestWithContext(r.Context(), "GET", upstream.String(), nil)
 	if err != nil {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Error(w, "cannot create request", http.StatusInternalServerError)
 		return
 	}
 
-	// Custom headers support: header=Key=Value
+	// Custom headers support
 	for _, h := range r.URL.Query()["header"] {
 		parts := strings.SplitN(h, "=", 2)
 		if len(parts) == 2 {
@@ -72,34 +67,32 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
 		http.Error(w, "upstream request failed: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 
-	// Check if it's an M3U8 playlist
+	// Copy upstream headers but preserve CORS
+	for k, vals := range resp.Header {
+		for _, v := range vals {
+			w.Header().Add(k, v)
+		}
+	}
+	w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+
+	// Handle M3U8 specially
 	contentType := resp.Header.Get("Content-Type")
 	if strings.Contains(contentType, "application/vnd.apple.mpegurl") ||
 		strings.Contains(contentType, "application/x-mpegURL") ||
 		strings.HasSuffix(strings.ToLower(upstream.Path), ".m3u8") {
-
 		w.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 		rewriteM3U8(w, resp.Body, upstream, r)
 		return
 	}
 
-	// Otherwise just stream normally
-	for k, vals := range resp.Header {
-		// Skip CORS headers from upstream to avoid duplicates
-		if k == "Access-Control-Allow-Origin" ||
-			k == "Access-Control-Allow-Methods" ||
-			k == "Access-Control-Allow-Headers" {
-			continue
-		}
-		for _, v := range vals {
-			w.Header().Add(k, v)
-		}
-	}
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
