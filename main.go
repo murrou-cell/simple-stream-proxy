@@ -9,7 +9,6 @@ import (
 	"net/url"
 	"os"
 	"regexp"
-	"strconv"
 	"strings"
 )
 
@@ -106,140 +105,71 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
+
 func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.Request) {
 	scanner := bufio.NewScanner(body)
 
-	// --- Read lag value (0 = disabled) ---
-	lagStr := r.URL.Query().Get("lag")
-	lag, _ := strconv.Atoi(lagStr)
-	if lag < 0 {
-		lag = 0
-	}
-
-	var sequence int
-	var sequenceFound bool
-	var skipCount int
-
-	reKey := regexp.MustCompile(`URI="([^"]+)"`)
-
 	for scanner.Scan() {
 		line := scanner.Text()
-		trimmed := strings.TrimSpace(line)
+		trim := strings.TrimSpace(line)
 
-		// ===========================
-		//   HANDLE AES-128 KEY LINE
-		// ===========================
-		if strings.HasPrefix(trimmed, "#EXT-X-KEY") {
-
-			line = reKey.ReplaceAllStringFunc(line, func(match string) string {
-				m := reKey.FindStringSubmatch(match)
+		if strings.HasPrefix(trim, "#EXT-X-KEY") {
+			re := regexp.MustCompile(`URI="([^"]+)"`)
+			line = re.ReplaceAllStringFunc(line, func(match string) string {
+				m := re.FindStringSubmatch(match)
 				if len(m) < 2 {
 					return match
 				}
 
 				keyURL := m[1]
-				absKey := base.ResolveReference(&url.URL{Path: keyURL}).String()
+				abs := base.ResolveReference(&url.URL{Path: keyURL}).String()
 
-				proxy := url.URL{
+				proxyURL := url.URL{
 					Scheme: scheme,
 					Host:   r.Host,
 					Path:   "/proxy",
 				}
-				q := proxy.Query()
-				q.Set("url", absKey)
+				values := proxyURL.Query()
+				values.Set("url", abs)
 
-				// forward headers
 				for _, h := range r.URL.Query()["header"] {
-					q.Add("header", h)
+					values.Add("header", h)
 				}
 
-				// forward lag
-				if lag > 0 {
-					q.Set("lag", strconv.Itoa(lag))
-				}
+				proxyURL.RawQuery = values.Encode()
 
-				proxy.RawQuery = q.Encode()
-
-				return fmt.Sprintf(`URI="%s"`, proxy.String())
+				return fmt.Sprintf(`URI="%s"`, proxyURL.String())
 			})
 
 			w.Write([]byte(line + "\n"))
 			continue
 		}
 
-		// ===========================
-		//   HANDLE ALL COMMENT LINES
-		// ===========================
-		if strings.HasPrefix(trimmed, "#") {
-
-			// MEDIA SEQUENCE
-			if strings.HasPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:") {
-				seqStr := strings.TrimPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:")
-				seqStr = strings.TrimSpace(seqStr)
-
-				if n, err := strconv.Atoi(seqStr); err == nil {
-					sequenceFound = true
-					sequence = n
-
-					if lag > 0 {
-						newSeq := n - lag
-						if newSeq < 0 {
-							newSeq = 0
-						}
-
-						line = "#EXT-X-MEDIA-SEQUENCE:" + strconv.Itoa(newSeq)
-						skipCount = lag
-					}
-				}
-			}
-
+		// Leave comments as-is
+		if strings.HasPrefix(trim, "#") || trim == "" {
 			w.Write([]byte(line + "\n"))
 			continue
 		}
 
-		// ===========================
-		//   EMPTY LINES
-		// ===========================
-		if trimmed == "" {
-			w.Write([]byte("\n"))
-			continue
-		}
+		// Convert relative -> absolute
+		absURL := base.ResolveReference(&url.URL{Path: trim})
 
-		// ===========================
-		//   SKIP FIRST lag SEGMENTS
-		// ===========================
-		if skipCount > 0 && sequenceFound {
-			skipCount--
-			sequence++
-			continue
-		}
-
-		// ===========================
-		//   NORMAL URI REWRITE (.ts/.m3u8)
-		// ===========================
-		abs := base.ResolveReference(&url.URL{Path: trimmed})
-
-		proxy := url.URL{
+		// Wrap in proxy URL
+		proxyURL := url.URL{
 			Scheme: scheme,
 			Host:   r.Host,
 			Path:   "/proxy",
 		}
+		values := proxyURL.Query()
+		values.Set("url", absURL.String())
 
-		q := proxy.Query()
-		q.Set("url", abs.String())
-
-		// forward headers
+		// Preserve headers
 		for _, h := range r.URL.Query()["header"] {
-			q.Add("header", h)
+			values.Add("header", h)
 		}
 
-		// forward lag
-		if lag > 0 {
-			q.Set("lag", strconv.Itoa(lag))
-		}
+		proxyURL.RawQuery = values.Encode()
 
-		proxy.RawQuery = q.Encode()
-
-		w.Write([]byte(proxy.String() + "\n"))
+		w.Write([]byte(proxyURL.String() + "\n"))
 	}
 }
