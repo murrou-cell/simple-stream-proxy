@@ -2,11 +2,13 @@ package main
 
 import (
 	"bufio"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -104,11 +106,10 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(resp.StatusCode)
 	io.Copy(w, resp.Body)
 }
-
 func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.Request) {
 	scanner := bufio.NewScanner(body)
 
-	// Read lag=N (default: 0 = disabled)
+	// --- Read lag value (0 = disabled) ---
 	lagStr := r.URL.Query().Get("lag")
 	lag, _ := strconv.Atoi(lagStr)
 	if lag < 0 {
@@ -119,26 +120,73 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 	var sequenceFound bool
 	var skipCount int
 
+	reKey := regexp.MustCompile(`URI="([^"]+)"`)
+
 	for scanner.Scan() {
 		line := scanner.Text()
 		trimmed := strings.TrimSpace(line)
 
+		// ===========================
+		//   HANDLE AES-128 KEY LINE
+		// ===========================
+		if strings.HasPrefix(trimmed, "#EXT-X-KEY") {
+
+			line = reKey.ReplaceAllStringFunc(line, func(match string) string {
+				m := reKey.FindStringSubmatch(match)
+				if len(m) < 2 {
+					return match
+				}
+
+				keyURL := m[1]
+				absKey := base.ResolveReference(&url.URL{Path: keyURL}).String()
+
+				proxy := url.URL{
+					Scheme: scheme,
+					Host:   r.Host,
+					Path:   "/proxy",
+				}
+				q := proxy.Query()
+				q.Set("url", absKey)
+
+				// forward headers
+				for _, h := range r.URL.Query()["header"] {
+					q.Add("header", h)
+				}
+
+				// forward lag
+				if lag > 0 {
+					q.Set("lag", strconv.Itoa(lag))
+				}
+
+				proxy.RawQuery = q.Encode()
+
+				return fmt.Sprintf(`URI="%s"`, proxy.String())
+			})
+
+			w.Write([]byte(line + "\n"))
+			continue
+		}
+
+		// ===========================
+		//   HANDLE ALL COMMENT LINES
+		// ===========================
 		if strings.HasPrefix(trimmed, "#") {
 
-			// Detect media sequence
+			// MEDIA SEQUENCE
 			if strings.HasPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:") {
 				seqStr := strings.TrimPrefix(trimmed, "#EXT-X-MEDIA-SEQUENCE:")
 				seqStr = strings.TrimSpace(seqStr)
-				if n, err := strconv.Atoi(seqStr); err == nil {
-					sequence = n
-					sequenceFound = true
 
-					// Apply lag shift if enabled
+				if n, err := strconv.Atoi(seqStr); err == nil {
+					sequenceFound = true
+					sequence = n
+
 					if lag > 0 {
 						newSeq := n - lag
 						if newSeq < 0 {
 							newSeq = 0
 						}
+
 						line = "#EXT-X-MEDIA-SEQUENCE:" + strconv.Itoa(newSeq)
 						skipCount = lag
 					}
@@ -149,37 +197,49 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 			continue
 		}
 
+		// ===========================
+		//   EMPTY LINES
+		// ===========================
 		if trimmed == "" {
 			w.Write([]byte("\n"))
 			continue
 		}
 
+		// ===========================
+		//   SKIP FIRST lag SEGMENTS
+		// ===========================
 		if skipCount > 0 && sequenceFound {
 			skipCount--
 			sequence++
 			continue
 		}
 
+		// ===========================
+		//   NORMAL URI REWRITE (.ts/.m3u8)
+		// ===========================
 		abs := base.ResolveReference(&url.URL{Path: trimmed})
 
-		proxyURL := url.URL{
+		proxy := url.URL{
 			Scheme: scheme,
 			Host:   r.Host,
 			Path:   "/proxy",
 		}
-		q := proxyURL.Query()
+
+		q := proxy.Query()
 		q.Set("url", abs.String())
 
+		// forward headers
 		for _, h := range r.URL.Query()["header"] {
 			q.Add("header", h)
 		}
 
+		// forward lag
 		if lag > 0 {
 			q.Set("lag", strconv.Itoa(lag))
 		}
 
-		proxyURL.RawQuery = q.Encode()
+		proxy.RawQuery = q.Encode()
 
-		w.Write([]byte(proxyURL.String() + "\n"))
+		w.Write([]byte(proxy.String() + "\n"))
 	}
 }
