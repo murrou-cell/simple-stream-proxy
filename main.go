@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -49,6 +50,46 @@ func handleProxy(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "missing url parameter", http.StatusBadRequest)
 		return
 	}
+
+	// ----------- SHOUTCAST / ICECAST HANDLER -----------
+	if strings.HasSuffix(rawURL, ";") {
+		log.Print("Handling Shoutcast/Icecast stream via raw TCP")
+
+		hostPort := strings.TrimPrefix(rawURL, "http://")
+		hostPort = strings.TrimSuffix(hostPort, "/;")
+
+		conn, err := net.Dial("tcp", hostPort)
+		if err != nil {
+			http.Error(w, "failed to connect upstream: "+err.Error(), http.StatusBadGateway)
+			return
+		}
+		defer conn.Close()
+
+		// Send ICY GET request
+		req := "GET /; HTTP/1.0\r\nIcy-MetaData: 1\r\nUser-Agent: Mozilla/5.0\r\n\r\n"
+		conn.Write([]byte(req))
+
+		// Read headers until empty line
+		reader := bufio.NewReader(conn)
+		for {
+			line, _ := reader.ReadString('\n')
+			line = strings.TrimSpace(line)
+			if line == "" {
+				break
+			}
+			if strings.HasPrefix(strings.ToLower(line), "content-type:") {
+				w.Header().Set("Content-Type", strings.SplitN(line, ":", 2)[1])
+			}
+		}
+
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		w.WriteHeader(http.StatusOK)
+
+		// Stream remaining audio to browser
+		io.Copy(w, reader)
+		return
+	}
+	// ----------- END SHOUTCAST HANDLER -----------
 
 	upstream, err := url.Parse(rawURL)
 	if err != nil {
