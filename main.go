@@ -154,6 +154,7 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 		line := scanner.Text()
 		trim := strings.TrimSpace(line)
 
+		// Handle EXT-X-KEY lines
 		if strings.HasPrefix(trim, "#EXT-X-KEY") {
 			re := regexp.MustCompile(`URI="([^"]+)"`)
 			line = re.ReplaceAllStringFunc(line, func(match string) string {
@@ -163,8 +164,15 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 				}
 
 				keyURL := m[1]
-				abs := base.ResolveReference(&url.URL{Path: keyURL}).String()
 
+				// Parse keyURL properly (preserves query strings)
+				u, err := url.Parse(keyURL)
+				if err != nil {
+					return match
+				}
+				abs := base.ResolveReference(u).String()
+
+				// Build proxy URL
 				proxyURL := url.URL{
 					Scheme: scheme,
 					Host:   r.Host,
@@ -173,12 +181,12 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 				values := proxyURL.Query()
 				values.Set("url", abs)
 
+				// Preserve headers
 				for _, h := range r.URL.Query()["header"] {
 					values.Add("header", h)
 				}
 
 				proxyURL.RawQuery = values.Encode()
-
 				return fmt.Sprintf(`URI="%s"`, proxyURL.String())
 			})
 
@@ -186,14 +194,19 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 			continue
 		}
 
-		// Leave comments as-is
+		// Leave comments and empty lines as-is
 		if strings.HasPrefix(trim, "#") || trim == "" {
 			w.Write([]byte(line + "\n"))
 			continue
 		}
 
-		// Convert relative -> absolute
-		absURL := base.ResolveReference(&url.URL{Path: trim})
+		// Parse the playlist line (preserves query strings)
+		u, err := url.Parse(trim)
+		if err != nil {
+			// Skip invalid lines
+			continue
+		}
+		absURL := base.ResolveReference(u)
 
 		// Wrap in proxy URL
 		proxyURL := url.URL{
@@ -210,7 +223,6 @@ func rewriteM3U8(w http.ResponseWriter, body io.Reader, base *url.URL, r *http.R
 		}
 
 		proxyURL.RawQuery = values.Encode()
-
 		w.Write([]byte(proxyURL.String() + "\n"))
 	}
 }
